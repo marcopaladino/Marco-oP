@@ -1,0 +1,2172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced PDF Annotator</title>
+    
+    <!-- PWA Manifest & Mobile Theme -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#6c152b">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/337/337946.png">
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] }
+                }
+            }
+        }
+    </script>
+    <!-- Fonts for Splash Screen -->
+    <link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&display=swap" rel="stylesheet">
+    <!-- Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <!-- PDF.js for rendering -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <!-- jsPDF for template generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <!-- pdf-lib for document manipulation -->
+    <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+
+    <style>
+        /* FLUID SCALING */
+        html {
+            font-size: clamp(10px, 1vw + 0.5rem, 16px);
+        }
+
+        body { margin: 0; overflow: hidden; font-family: 'Inter', sans-serif; }
+        
+        /* Custom Scrollbar - WIDER FOR TOUCH */
+        ::-webkit-scrollbar { width: 12px; height: 12px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+        .dark ::-webkit-scrollbar-thumb { background-color: #4b5563; }
+        ::-webkit-scrollbar-thumb:hover { background-color: #94a3b8; }
+        .dark ::-webkit-scrollbar-thumb:hover { background-color: #6b7280; }
+
+        /* Splash Screen Animation - Fast Pop-in */
+        @keyframes splashPop {
+            0% { transform: scale(0.95); opacity: 0; }
+            50% { transform: scale(1.02); opacity: 1; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .animate-splash {
+            animation: splashPop 0.4s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+        }
+
+        /* Canvas Wrapper Setup */
+        #canvas-wrapper {
+            position: relative;
+            box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1);
+            margin: auto;
+            cursor: none; 
+            transform-origin: top center;
+            touch-action: none;
+        }
+        
+        /* Layer Stacking - Target ONLY main canvases to allow right sidebar thumbnail scrolling */
+        #canvas-wrapper canvas { 
+            position: absolute; top: 0; left: 0; 
+            touch-action: none; 
+        }
+        #pdf-render { z-index: 1; }
+        #annotation-layer { z-index: 2; cursor: none; }
+        #laser-layer { z-index: 3; cursor: none; pointer-events: auto; }
+
+        /* Text Layer & Input Styling */
+        [contenteditable="true"]:empty:before {
+            content: "Type here...";
+            color: #9ca3af;
+            pointer-events: none;
+            display: block;
+        }
+
+        /* Styling custom cursors and inputs */
+        #custom-cursor {
+            position: fixed; pointer-events: none; z-index: 9999;
+            transform: translate(-50%, -50%); display: none;
+            align-items: center; justify-content: center;
+        }
+        #cursor-circle {
+            border-radius: 50%; border: 2px solid; position: absolute; box-sizing: border-box;
+        }
+        #cursor-emoji {
+            position: absolute; font-size: 1rem;
+            transform: translate(15px, -15px); text-shadow: 0 0 2px rgba(255,255,255,0.8);
+        }
+        .dark #cursor-emoji { text-shadow: 0 0 2px rgba(0,0,0,0.8); }
+
+        input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+        input[type="color"]::-webkit-color-swatch { border: none; border-radius: 4px; border: 1px solid #cbd5e1; }
+        .dark input[type="color"]::-webkit-color-swatch { border-color: #4b5563; }
+        
+        #loading-overlay {
+            position: fixed; inset: 0; background: rgba(255, 255, 255, 0.9);
+            z-index: 10000; display: none; flex-direction: column; align-items: center; justify-content: center;
+        }
+        .dark #loading-overlay { background: rgba(17, 24, 39, 0.9); }
+
+        @media (max-width: 768px) {
+            #sidebar, #right-sidebar { position: absolute; height: 100%; box-shadow: 2xl; z-index: 50; }
+            #sidebar { left: 0; }
+            #right-sidebar { right: 0; }
+        }
+    </style>
+</head>
+
+<body class="flex h-screen w-screen text-sm bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100 transition-colors duration-200">
+
+    <!-- Splash Screen (HTML/CSS Based) -->
+    <div id="welcome-splash" class="fixed inset-0 z-[10005] bg-black/20 dark:bg-black/60 backdrop-blur-sm flex items-center justify-center transition-opacity duration-300 p-4">
+        <div class="relative flex flex-col items-center justify-center animate-splash w-full max-w-3xl aspect-[16/9] bg-[#f7f5ef] dark:bg-gray-900 rounded-[3rem] shadow-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+            <!-- Background PDF Icon -->
+            <div class="absolute inset-0 flex items-center justify-center opacity-[0.15] dark:opacity-10 pointer-events-none">
+                <i class="ph ph-file-text text-[24rem] text-gray-400"></i>
+            </div>
+            
+            <!-- Main Splash Content -->
+            <div class="relative z-10 flex flex-col items-center -mt-6">
+                <div class="flex items-end">
+                    <h1 style="font-family: 'Dancing Script', cursive;" class="text-8xl md:text-[8rem] font-bold text-[#6c152b] dark:text-[#a82d4f] leading-none drop-shadow-sm pb-2">
+                        Marc-oP
+                    </h1>
+                    <i class="ph-fill ph-pen-nib text-5xl md:text-6xl text-gray-800 dark:text-gray-200 mb-8 ml-2 -rotate-45 drop-shadow-md"></i>
+                </div>
+                <div class="h-0.5 w-[110%] bg-[#6c152b]/20 dark:bg-[#a82d4f]/30 rounded-full mt-2 mb-4"></div>
+                <p class="text-[#6c152b] dark:text-[#a82d4f] font-bold tracking-[0.2em] text-sm md:text-lg uppercase">
+                    PDF Reader & Annotation Tool
+                </p>
+                <!-- Added Credit Text -->
+                <p class="mt-6 text-xs md:text-sm text-gray-600 dark:text-gray-400 font-medium tracking-wide">
+                    Created by Marco Paladino &amp; Jordan Knarr
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <div id="custom-cursor">
+        <div id="cursor-circle"></div>
+        <div id="cursor-emoji">🖊️</div>
+    </div>
+
+    <div id="loading-overlay">
+        <i class="ph ph-spinner animate-spin text-4xl mb-4 text-indigo-500"></i>
+        <div id="loading-text" class="text-lg font-semibold text-gray-800 dark:text-gray-200">Processing...</div>
+    </div>
+
+    <!-- General Message Modal -->
+    <div id="message-modal" class="fixed inset-0 bg-black/50 z-[10001] hidden items-center justify-center backdrop-blur-sm transition-opacity">
+        <div class="bg-white dark:bg-gray-900 rounded-xl shadow-2xl p-6 max-w-sm w-full mx-4 border border-gray-200 dark:border-gray-800 flex flex-col items-center text-center">
+            <i id="modal-icon" class="ph ph-warning-circle text-4xl text-amber-500 mb-3"></i>
+            <h3 id="modal-title" class="text-lg font-bold mb-2">Notice</h3>
+            <p id="modal-text" class="text-gray-600 dark:text-gray-400 mb-6 text-sm">Message goes here.</p>
+            <button id="modal-btn" class="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors">OK</button>
+        </div>
+    </div>
+
+    <!-- Lined Paper Type Selection Modal -->
+    <div id="lined-modal" class="fixed inset-0 bg-black/50 z-[10001] hidden items-center justify-center backdrop-blur-sm transition-opacity opacity-0">
+        <div class="bg-white dark:bg-gray-900 rounded-xl shadow-2xl p-6 max-w-sm w-full mx-4 border border-gray-200 dark:border-gray-800 flex flex-col items-center text-center">
+            <i class="ph ph-list-dashes text-4xl text-sky-500 mb-3"></i>
+            <h3 class="text-lg font-bold mb-4">Choose Lined Paper Type</h3>
+            <div class="w-full flex flex-col gap-3">
+                <button id="btn-standard-lined" class="w-full py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 rounded-lg font-medium transition-colors text-gray-800 dark:text-gray-200 flex items-center justify-center gap-2">
+                    <i class="ph ph-rows text-lg"></i> Wide Lined Paper
+                </button>
+                <button id="btn-handwriting-lined" class="w-full py-2.5 bg-sky-100 hover:bg-sky-200 dark:bg-sky-900/40 dark:hover:bg-sky-900/60 rounded-lg font-medium transition-colors text-sky-800 dark:text-sky-300 flex items-center justify-center gap-2 border border-sky-200 dark:border-sky-800">
+                    <i class="ph ph-text-aa text-lg"></i> Primary Paper
+                </button>
+                <button id="btn-cancel-lined" class="w-full py-2 mt-2 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 font-medium transition-colors">
+                    Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <aside id="sidebar" class="w-[16.5rem] bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 flex flex-col z-20 shrink-0 shadow-lg transition-all duration-300 ease-in-out">
+        <div class="md:hidden p-3 border-b border-gray-200 dark:border-gray-800 flex justify-end">
+            <button id="btn-close-sidebar-mobile" class="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700">
+                <i class="ph ph-x text-lg"></i>
+            </button>
+        </div>
+
+        <div class="p-3 flex-1 flex flex-col gap-3 overflow-y-auto mt-2">
+            
+            <div class="p-3 border border-gray-200 dark:border-gray-800 rounded-xl flex flex-col">
+                <label for="file-upload" class="flex items-center justify-center gap-2 w-full px-4 py-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg cursor-pointer transition-colors font-medium shadow-md">
+                    <i class="ph ph-upload-simple text-lg"></i> Open PDF
+                </label>
+                <input id="file-upload" type="file" accept="application/pdf" class="hidden" />
+                <p id="file-name" class="text-xs text-gray-500 dark:text-gray-400 truncate mt-2 text-center">No file selected</p>
+            </div>
+
+            <!-- Templates Section -->
+            <div class="flex flex-col gap-2 p-3 border border-gray-200 dark:border-gray-800 rounded-xl">
+                <select id="template-bg-color" class="w-full bg-gray-50 dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md px-2 py-1.5 text-gray-900 dark:text-white text-xs focus:outline-none focus:border-indigo-500">
+                    <option value="#ffffff">White Paper</option>
+                    <option value="#fef08a">Yellow Paper</option>
+                    <option value="#bae6fd">Blue Paper</option>
+                    <option value="#2a3b2e">Chalkboard</option>
+                </select>
+
+                <div class="grid grid-cols-3 gap-2">
+                    <button class="template-btn flex flex-col items-center justify-center gap-1 py-1.5 px-1 bg-emerald-100 hover:bg-emerald-50 dark:bg-emerald-900/30 dark:hover:bg-emerald-800/50 rounded-lg border border-emerald-200 dark:border-emerald-800 transition-colors" data-type="graph">
+                        <i class="ph ph-grid-four text-lg text-emerald-600 dark:text-emerald-400"></i>
+                        <span class="text-[10px] font-medium text-center text-emerald-800 dark:text-emerald-300 leading-none">Graph</span>
+                    </button>
+                    <button class="template-btn flex flex-col items-center justify-center gap-1 py-1.5 px-1 bg-sky-100 hover:bg-sky-50 dark:bg-sky-900/30 dark:hover:bg-sky-800/50 rounded-lg border border-sky-200 dark:border-sky-800 transition-colors" data-type="lined">
+                        <i class="ph ph-list-dashes text-lg text-sky-600 dark:text-sky-400"></i>
+                        <span class="text-[10px] font-medium text-center text-sky-800 dark:text-sky-300 leading-none">Lined</span>
+                    </button>
+                    <button class="template-btn flex flex-col items-center justify-center gap-1 py-1.5 px-1 bg-fuchsia-100 hover:bg-fuchsia-50 dark:bg-fuchsia-900/30 dark:hover:bg-fuchsia-800/50 rounded-lg border border-fuchsia-200 dark:border-fuchsia-800 transition-colors" data-type="music">
+                        <i class="ph ph-music-notes text-lg text-fuchsia-600 dark:text-fuchsia-400"></i>
+                        <span class="text-[10px] font-medium text-center text-fuchsia-800 dark:text-fuchsia-300 leading-none">Music</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Tools Section (3x3 Grid) -->
+            <div class="flex flex-col gap-2 p-3 border border-gray-200 dark:border-gray-800 rounded-xl">
+                <div class="grid grid-cols-3 gap-2">
+                    <button id="btn-pan" class="tool-btn flex flex-col items-center justify-center gap-1 py-1.5 px-1 rounded-lg bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 transition-all border-2 border-transparent" data-tool="pan">
+                        <span class="text-lg">🖐️</span>
+                        <span class="text-[10px] font-medium text-center leading-none">Pan</span>
+                    </button>
+                    <button id="btn-text" class="tool-btn flex flex-col items-center justify-center gap-1 py-1.5 px-1 rounded-lg transition-all border-2 border-transparent" data-tool="text">
+                        <span class="text-lg">🔤</span>
+                        <span class="text-[10px] font-medium text-center leading-none">Text</span>
+                    </button>
+                    <button id="btn-pen" class="tool-btn flex flex-col items-center justify-center gap-1 py-1.5 px-1 rounded-lg transition-all border-2 border-transparent" data-tool="pen">
+                        <span class="text-lg">🖊️</span>
+                        <span class="text-[10px] font-medium text-center leading-none">Pen</span>
+                    </button>
+                    <button id="btn-eraser" class="tool-btn flex flex-col items-center justify-center gap-1 py-1.5 px-1 rounded-lg transition-all border-2 border-transparent" data-tool="eraser">
+                        <span class="text-lg">🧽</span>
+                        <span class="text-[10px] font-medium text-center leading-none">Eraser</span>
+                    </button>
+                    <button id="btn-laser" class="tool-btn flex flex-col items-center justify-center gap-1 py-1.5 px-1 rounded-lg transition-all border-2 border-transparent" data-tool="laser">
+                        <span class="text-lg">🪄</span>
+                        <span class="text-[10px] font-medium text-center leading-none">Laser</span>
+                    </button>
+                    <button id="btn-shape" class="tool-btn flex flex-col items-center justify-center gap-1 py-1.5 px-1 rounded-lg transition-all border-2 border-transparent" data-tool="shape">
+                        <span class="text-lg">🔲</span>
+                        <span class="text-[10px] font-medium text-center leading-none">Shapes</span>
+                    </button>
+                </div>
+
+                <div id="shape-settings" class="hidden flex-col gap-2">
+                    <label class="text-xs text-gray-500 dark:text-gray-400">Shape Type</label>
+                    <select id="shape-type" class="w-full bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md px-2 py-2 text-gray-900 dark:text-white text-xs focus:outline-none focus:border-indigo-500">
+                        <option value="rectangle">Rectangle</option>
+                        <option value="square">Square</option>
+                        <option value="circle">Circle</option>
+                        <option value="ellipse">Ellipse</option>
+                        <option value="pixelate">Pixelate</option>
+                    </select>
+
+                    <div id="fill-opacity-settings" class="flex flex-col gap-1 mt-1">
+                        <div class="flex justify-between items-center">
+                            <label class="text-xs text-gray-500 dark:text-gray-400">Fill Opacity</label>
+                            <span id="opacity-val" class="text-xs font-mono text-gray-900 dark:text-white">0%</span>
+                        </div>
+                        <input type="range" id="opacity-slider" min="0" max="100" value="0" class="w-full h-2 bg-gray-300 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+                    </div>
+
+                    <div id="pixelate-settings" class="hidden flex-col gap-2 mt-2 bg-gray-100 dark:bg-gray-800/50 p-2 rounded-lg border border-gray-200 dark:border-gray-700">
+                        <div class="flex justify-between items-center">
+                            <label class="text-xs text-gray-500 dark:text-gray-400">Pixel Size</label>
+                            <span id="pixel-val" class="text-xs font-mono text-gray-900 dark:text-white">10px</span>
+                        </div>
+                        <input type="range" id="pixel-slider" min="2" max="50" value="10" class="w-full h-2 bg-gray-300 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+                    </div>
+                </div>
+
+                <div id="thickness-settings" class="flex flex-col gap-2 mt-1">
+                    <div class="flex justify-between items-center">
+                        <label id="thickness-label" class="text-xs text-gray-500 dark:text-gray-400">Thickness (px)</label>
+                        <input type="number" id="thick-input" min="1" max="100" value="5" class="w-16 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md px-2 py-1 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500 text-center transition-colors text-xs font-mono" />
+                    </div>
+                    <input type="range" id="thick-slider" min="1" max="100" value="5" class="w-full h-2 bg-gray-300 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+                </div>
+            </div>
+
+            <!-- Color Section -->
+            <div class="flex flex-col gap-2 p-3 border border-gray-200 dark:border-gray-800 rounded-xl">
+                <div id="color-palette" class="grid grid-cols-5 gap-2"></div>
+                
+                <input type="range" id="color-slider" min="0" max="360" value="45" class="w-full h-3 mt-1 rounded-lg appearance-none cursor-pointer outline-none shadow-sm" style="background: linear-gradient(to right, #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%);">
+                
+                <div class="flex gap-2 h-9 mt-1">
+                    <input type="color" id="color-picker" value="#eab308" class="w-12 h-full cursor-pointer p-0 border-0 bg-transparent rounded-md" />
+                    <input type="text" id="color-hex" value="#eab308" class="flex-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded-md px-3 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-500 font-mono text-xs uppercase transition-colors" />
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex flex-col gap-2 mt-auto p-3 border border-gray-200 dark:border-gray-800 rounded-xl mb-2">
+                <button id="btn-save-current-pdf" class="flex items-center justify-center gap-2 w-full px-4 py-2 text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-lg transition-colors border border-gray-200 dark:border-gray-700 whitespace-nowrap">
+                    <i class="ph ph-file-pdf"></i> Save current page
+                </button>
+                <button id="btn-save-pdf" class="flex items-center justify-center gap-2 w-full px-4 py-3 text-white bg-green-600 hover:bg-green-500 shadow-md rounded-lg transition-colors font-medium whitespace-nowrap">
+                    <i class="ph ph-export"></i> Save full as PDF
+                </button>
+            </div>
+        </div>
+    </aside>
+
+    <main class="flex-1 flex flex-col relative min-w-0 bg-gray-100 dark:bg-gray-950 transition-colors duration-200 overflow-hidden">
+        
+        <header class="min-h-[3.5rem] py-1.5 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 grid grid-cols-[auto_1fr_auto] md:grid-cols-3 px-4 shrink-0 z-10 transition-colors duration-200 relative shadow-sm">
+            <div class="flex items-center gap-2 justify-self-start">
+                <button id="btn-toggle-sidebar" class="p-2 rounded bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-colors" title="Toggle Tools">
+                    <i class="ph ph-list text-xl"></i>
+                </button>
+                <button id="theme-toggle" class="p-2 rounded bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-300 transition-colors ml-2" title="Toggle Light/Dark Mode">
+                    <i class="ph ph-moon text-xl dark:hidden"></i>
+                    <i class="ph ph-sun text-xl hidden dark:block"></i>
+                </button>
+            </div>
+
+            <div class="flex flex-col items-center justify-center gap-1 justify-self-center w-full px-2">
+                <div class="flex items-center justify-center gap-1 md:gap-4">
+                    <button id="zoom-out" class="p-1 rounded bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"><i class="ph ph-minus"></i></button>
+                    <span id="zoom-val" class="text-[0.7rem] md:text-xs font-mono w-10 md:w-12 text-center text-gray-600 dark:text-gray-400">100%</span>
+                    <input type="range" id="zoom-slider" min="0.5" max="3" step="0.05" value="1" class="w-14 md:w-28 h-1.5 bg-gray-300 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+                    <button id="zoom-in" class="p-1 rounded bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300"><i class="ph ph-plus"></i></button>
+                </div>
+                
+                <button id="btn-fit-screen" class="hidden md:flex items-center gap-1 px-3 py-0.5 rounded bg-transparent hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 text-[10px] font-medium transition-colors whitespace-nowrap">
+                    <i class="ph ph-corners-out"></i> Fit to screen
+                </button>
+            </div>
+            
+            <div class="flex items-center gap-1 md:gap-2 justify-self-end">
+                <button id="btn-rotate-ccw" class="p-1.5 md:p-2 rounded bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-colors" title="Rotate Left">
+                    <i class="ph ph-arrow-counter-clockwise text-lg md:text-xl"></i>
+                </button>
+                <button id="btn-rotate-cw" class="p-1.5 md:p-2 rounded bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-colors" title="Rotate Right">
+                    <i class="ph ph-arrow-clockwise text-lg md:text-xl"></i>
+                </button>
+                <div class="w-px h-6 bg-gray-300 dark:bg-gray-700 mx-0.5 md:mx-1"></div>
+                <button id="btn-toggle-pages" class="p-1.5 md:p-2 rounded bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-colors" title="Toggle Pages">
+                    <i class="ph ph-files text-lg md:text-xl"></i>
+                </button>
+            </div> 
+        </header>
+
+        <div id="main-scroll" class="flex-1 overflow-auto relative p-4 md:p-8 flex items-start justify-center">
+            <div id="empty-state" class="m-auto flex flex-col items-center gap-4 text-gray-500 dark:text-gray-600 mt-20">
+                <i class="ph ph-file-pdf text-6xl opacity-40"></i>
+                <p>Upload a PDF, add a blank page, or select a template</p>
+            </div>
+
+            <div id="canvas-wrapper" style="display: none;">
+                <canvas id="pdf-render"></canvas>
+                <canvas id="annotation-layer"></canvas>
+                <canvas id="laser-layer"></canvas>
+                <!-- Dedicated interactive layer for text -->
+                <div id="text-layer" class="absolute inset-0 z-[4] pointer-events-none"></div>
+            </div>
+        </div>
+
+        <footer class="h-14 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 flex items-center justify-between px-2 md:px-6 shrink-0 z-10 transition-colors duration-200">
+            <div class="flex gap-1 md:gap-2">
+                <button id="btn-add-page" class="px-2 md:px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded flex items-center gap-1 transition-colors text-xs font-semibold whitespace-nowrap">
+                    <i class="ph ph-plus-circle text-base md:text-lg"></i> <span class="hidden md:inline">Add</span>
+                </button>
+                <button id="btn-remove-page" class="px-2 md:px-3 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-900/30 dark:hover:bg-red-900/50 text-red-600 dark:text-red-400 rounded flex items-center gap-1 transition-colors text-xs font-semibold whitespace-nowrap">
+                    <i class="ph ph-minus-circle text-base md:text-lg"></i> <span class="hidden md:inline">Remove</span>
+                </button>
+            </div>
+
+            <div class="flex items-center gap-2 md:gap-6">
+                <button id="page-prev" class="px-2 md:px-4 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 rounded text-gray-700 dark:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 md:gap-2 transition-colors">
+                    <i class="ph ph-caret-left"></i> <span class="hidden md:inline">Prev</span>
+                </button>
+                <span class="text-xs md:text-sm text-gray-500 dark:text-gray-400 font-medium whitespace-nowrap"><span class="hidden md:inline">Page </span><span id="page-num" class="text-gray-900 dark:text-white">0</span> / <span id="page-count" class="text-gray-900 dark:text-white">0</span></span>
+                <button id="page-next" class="px-2 md:px-4 py-1.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 rounded text-gray-700 dark:text-gray-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 md:gap-2 transition-colors">
+                    <span class="hidden md:inline">Next</span> <i class="ph ph-caret-right"></i>
+                </button>
+            </div>
+            
+            <div class="flex gap-1 md:gap-2">
+                <button id="btn-undo" class="px-2 md:px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:hover:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded flex items-center gap-1 transition-colors text-xs font-semibold whitespace-nowrap" title="Undo">
+                    <i class="ph ph-arrow-u-up-left text-base md:text-lg"></i> <span class="hidden md:inline">Undo</span>
+                </button>
+                <button id="btn-clear" class="px-2 md:px-3 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-900/30 dark:hover:bg-red-900/50 text-red-600 dark:text-red-400 rounded flex items-center gap-1 transition-colors text-xs font-semibold whitespace-nowrap" title="Clear Page">
+                    <i class="ph ph-trash text-base md:text-lg"></i> <span class="hidden md:inline">Clear</span>
+                </button>
+            </div>
+        </footer>
+    </main>
+
+    <aside id="right-sidebar" class="w-[16rem] bg-gray-50 dark:bg-gray-900 border-l border-gray-200 dark:border-gray-800 flex flex-col z-20 shrink-0 shadow-lg transition-all duration-300 ease-in-out">
+        <div class="p-3 border-b border-gray-200 dark:border-gray-800 flex justify-between items-center bg-white dark:bg-gray-950">
+            <span class="text-xs font-semibold text-gray-500 uppercase tracking-wider pl-2">Pages</span>
+            <button id="btn-close-pages-mobile" class="md:hidden p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700">
+                <i class="ph ph-x text-lg"></i>
+            </button>
+        </div>
+        <!-- ADDED TOUCH-SCROLL PROPERTIES HERE -->
+        <div id="thumbnail-container" class="flex-1 overflow-y-auto p-4 flex flex-col gap-6 relative touch-pan-y" style="-webkit-overflow-scrolling: touch;">
+            <!-- Thumbnails inserted here -->
+        </div>
+    </aside>
+
+    <script>
+        // Accelerated welcome splash fade-out logic
+        window.addEventListener('load', () => {
+            setTimeout(() => {
+                const splash = document.getElementById('welcome-splash');
+                splash.style.opacity = '0';
+                setTimeout(() => {
+                    splash.style.display = 'none';
+                }, 300);
+            }, 800); // reduced wait time
+        });
+
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+        // Core Utilities
+        const hexToPdfRgb = (hex) => {
+            hex = hex.replace('#', '');
+            if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
+            return PDFLib.rgb(
+                parseInt(hex.substring(0, 2), 16) / 255,
+                parseInt(hex.substring(2, 4), 16) / 255,
+                parseInt(hex.substring(4, 6), 16) / 255
+            );
+        };
+
+        // Helper to convert hex + opacity percentage into RGBA string
+        const hexToRgba = (hex, alphaPct) => {
+            hex = hex.replace('#', '');
+            if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
+            const r = parseInt(hex.substring(0, 2), 16);
+            const g = parseInt(hex.substring(2, 4), 16);
+            const b = parseInt(hex.substring(4, 6), 16);
+            return `rgba(${r}, ${g}, ${b}, ${alphaPct / 100})`;
+        };
+
+        // Core State
+        let rawPdfBytes = null;
+        let pdfDoc = null; 
+        let currentFileName = '';
+        let pageNum = 1;
+        let baseScale = 1.0; 
+        let currentScale = 1.0;
+        
+        let tool = 'pen';
+        let shapeType = 'rectangle';
+        let color = '#eab308';
+        let pixelationIntensity = 10;
+        let shapeFillOpacity = 0; // 0 = clear fill, 100 = solid fill
+        
+        // Active selected element for modifying properties
+        let activeTextId = null;
+
+        // Independent tool thickness states
+        let toolThickness = {
+            pan: 0,
+            text: 18, 
+            pen: 5,
+            eraser: 40,
+            laser: 5,
+            shape: 5
+        };
+        let thickness = toolThickness[tool];
+
+        let isDrawing = false;
+        let lastPos = null;
+        let thumbnailGenId = 0;
+        
+        // Panning Variables
+        let isPanning = false;
+        let panStartX = 0;
+        let panStartY = 0;
+        let panScrollX = 0;
+        let panScrollY = 0;
+
+        // Touch Pinch-to-Zoom State
+        let initialPinchDistance = null;
+        let pinchStartScale = 1.0;
+        let activePointers = new Map();
+
+        // Memory & Undo Systems
+        let pageAnnotations = {}; // Raster strokes
+        let pageTexts = {};       // Text DOM elements
+        let undoStack = {};       
+
+        // Advanced Drawing State
+        let activeStrokePoints = [];
+        let isConstrainedDrawing = false;
+        let constrainedTargetPos = null;
+
+        // Laser State
+        let laserPoints = [];
+        let laserRafId = null;
+
+        // DOM Elements
+        const fileInput = document.getElementById('file-upload');
+        const canvasWrapper = document.getElementById('canvas-wrapper');
+        const emptyState = document.getElementById('empty-state');
+        const mainScroll = document.getElementById('main-scroll');
+        
+        const pdfCanvas = document.getElementById('pdf-render');
+        const drawCanvas = document.getElementById('annotation-layer');
+        const laserCanvas = document.getElementById('laser-layer');
+        const textLayer = document.getElementById('text-layer');
+        
+        const pdfCtx = pdfCanvas.getContext('2d');
+        const drawCtx = drawCanvas.getContext('2d', { willReadFrequently: true });
+        const laserCtx = laserCanvas.getContext('2d');
+        
+        const overlay = document.getElementById('loading-overlay');
+        const overlayText = document.getElementById('loading-text');
+        
+        const customCursor = document.getElementById('custom-cursor');
+        const cursorCircle = document.getElementById('cursor-circle');
+        const cursorEmoji = document.getElementById('cursor-emoji');
+
+        const sidebar = document.getElementById('sidebar');
+        const rSidebar = document.getElementById('right-sidebar');
+
+        if (window.innerWidth < 768) {
+            sidebar.classList.add('-ml-[16.5rem]');
+            rSidebar.classList.add('-mr-[16rem]');
+        }
+
+        function showMessage(title, text, isError = false) {
+            const modal = document.getElementById('message-modal');
+            document.getElementById('modal-title').textContent = title;
+            document.getElementById('modal-text').textContent = text;
+            
+            const icon = document.getElementById('modal-icon');
+            icon.className = isError 
+                ? "ph ph-x-circle text-4xl text-red-500 mb-3"
+                : "ph ph-info text-4xl text-indigo-500 mb-3";
+            
+            modal.style.display = 'flex';
+            setTimeout(() => modal.classList.remove('opacity-0'), 10);
+            
+            document.getElementById('modal-btn').onclick = () => {
+                modal.classList.add('opacity-0');
+                setTimeout(() => { modal.style.display = 'none'; }, 200);
+            };
+        }
+
+        document.getElementById('theme-toggle').addEventListener('click', () => {
+            document.documentElement.classList.toggle('dark');
+        });
+
+        function toggleLeftSidebar() { sidebar.classList.toggle('-ml-[16.5rem]'); }
+        function toggleRightSidebar() { rSidebar.classList.toggle('-mr-[16rem]'); }
+
+        document.getElementById('btn-toggle-sidebar').addEventListener('click', toggleLeftSidebar);
+        document.getElementById('btn-close-sidebar-mobile').addEventListener('click', toggleLeftSidebar);
+        document.getElementById('btn-toggle-pages').addEventListener('click', toggleRightSidebar);
+        document.getElementById('btn-close-pages-mobile').addEventListener('click', toggleRightSidebar);
+
+        const thickSlider = document.getElementById('thick-slider');
+        const thickInput = document.getElementById('thick-input');
+        const thicknessLabel = document.getElementById('thickness-label');
+        const thicknessSettings = document.getElementById('thickness-settings');
+        const colorPicker = document.getElementById('color-picker');
+        const colorHex = document.getElementById('color-hex');
+        const shapeSelect = document.getElementById('shape-type');
+        const shapeSettings = document.getElementById('shape-settings');
+        const pixelateSettings = document.getElementById('pixelate-settings');
+        const fillOpacitySettings = document.getElementById('fill-opacity-settings');
+        const opacitySlider = document.getElementById('opacity-slider');
+        const opacityVal = document.getElementById('opacity-val');
+        const pixelSlider = document.getElementById('pixel-slider');
+        const pixelVal = document.getElementById('pixel-val');
+        
+        const presetColors = ['#000000', '#ffffff', '#ef4444', '#22c55e', '#3b82f6'];
+        const colorPaletteContainer = document.getElementById('color-palette');
+
+        presetColors.forEach(c => {
+            const btn = document.createElement('button');
+            btn.className = 'w-full aspect-square rounded-full border-2 border-gray-200 dark:border-gray-700 shadow-sm transition-transform hover:scale-110';
+            btn.style.backgroundColor = c;
+            btn.addEventListener('click', () => updateColor(c));
+            colorPaletteContainer.appendChild(btn);
+        });
+
+        function hslToHex(h, s, l) {
+            l /= 100;
+            const a = s * Math.min(l, 1 - l) / 100;
+            const f = n => {
+                const k = (n + h / 30) % 12;
+                const c = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+                return Math.round(255 * c).toString(16).padStart(2, '0');
+            };
+            return `#${f(0)}${f(8)}${f(4)}`;
+        }
+
+        const colorSlider = document.getElementById('color-slider');
+        colorSlider.addEventListener('input', (e) => {
+            updateColor(hslToHex(e.target.value, 100, 50));
+        });
+
+        document.querySelectorAll('.tool-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                tool = e.currentTarget.dataset.tool;
+                updateToolUI();
+                if (window.innerWidth < 768 && tool !== 'shape' && tool !== 'text') toggleLeftSidebar(); 
+            });
+        });
+
+        shapeSelect.addEventListener('change', (e) => {
+            shapeType = e.target.value;
+            if (shapeType === 'pixelate') {
+                pixelateSettings.classList.remove('hidden');
+                pixelateSettings.classList.add('flex');
+                fillOpacitySettings.classList.add('hidden');
+                fillOpacitySettings.classList.remove('flex');
+                thicknessSettings.classList.add('hidden');
+                thicknessSettings.classList.remove('flex');
+            } else {
+                pixelateSettings.classList.add('hidden');
+                pixelateSettings.classList.remove('flex');
+                fillOpacitySettings.classList.remove('hidden');
+                fillOpacitySettings.classList.add('flex');
+                thicknessSettings.classList.remove('hidden');
+                thicknessSettings.classList.add('flex');
+            }
+            if (window.innerWidth < 768) toggleLeftSidebar(); 
+        });
+
+        opacitySlider.addEventListener('input', (e) => {
+            shapeFillOpacity = parseInt(e.target.value);
+            opacityVal.textContent = shapeFillOpacity + '%';
+        });
+
+        pixelSlider.addEventListener('input', (e) => {
+            pixelationIntensity = parseInt(e.target.value);
+            pixelVal.textContent = pixelationIntensity + 'px';
+        });
+
+        function updateToolUI() {
+            document.querySelectorAll('.tool-btn').forEach(btn => {
+                const isSelected = btn.dataset.tool === tool;
+                const activeClasses = isSelected ? "bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 ring-2 ring-indigo-500 ring-offset-2 dark:ring-offset-gray-900 border-indigo-500 shadow-md transform scale-[1.02]" :
+                                                   "bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-700 hover:border-gray-300 dark:hover:border-gray-600 border-transparent";
+                btn.className = `tool-btn flex flex-col items-center justify-center gap-1 py-1.5 px-1 rounded-lg font-bold transition-all border-2 ${activeClasses}`;
+            });
+
+            if (tool === 'pan') {
+                laserCanvas.style.touchAction = 'auto';
+                shapeSettings.classList.add('hidden');
+                shapeSettings.classList.remove('flex');
+                thicknessSettings.classList.add('hidden');
+                thicknessSettings.classList.remove('flex');
+            } else {
+                laserCanvas.style.touchAction = 'none';
+                
+                if (tool === 'shape') {
+                    thicknessLabel.textContent = "Thickness (px)";
+                    shapeSettings.classList.remove('hidden');
+                    shapeSettings.classList.add('flex');
+                    cursorEmoji.textContent = '➕';
+                    if (shapeType === 'pixelate') {
+                        pixelateSettings.classList.remove('hidden');
+                        pixelateSettings.classList.add('flex');
+                        fillOpacitySettings.classList.add('hidden');
+                        fillOpacitySettings.classList.remove('flex');
+                        thicknessSettings.classList.add('hidden');
+                        thicknessSettings.classList.remove('flex');
+                    } else {
+                        pixelateSettings.classList.add('hidden');
+                        pixelateSettings.classList.remove('flex');
+                        fillOpacitySettings.classList.remove('hidden');
+                        fillOpacitySettings.classList.add('flex');
+                        thicknessSettings.classList.remove('hidden');
+                        thicknessSettings.classList.add('flex');
+                    }
+                } else {
+                    shapeSettings.classList.add('hidden');
+                    shapeSettings.classList.remove('flex');
+                    pixelateSettings.classList.add('hidden');
+                    pixelateSettings.classList.remove('flex');
+                    fillOpacitySettings.classList.add('hidden');
+                    fillOpacitySettings.classList.remove('flex');
+                    thicknessSettings.classList.remove('hidden');
+                    thicknessSettings.classList.add('flex');
+                    
+                    if (tool === 'text') {
+                        thicknessLabel.textContent = "Font Size (pt)";
+                    } else {
+                        thicknessLabel.textContent = "Thickness (px)";
+                        cursorEmoji.textContent = tool === 'pen' ? '🖊️' : (tool === 'eraser' ? '🧽' : '🪄');
+                    }
+                }
+            }
+
+            if (tool !== 'pan') {
+                thickness = toolThickness[tool];
+                thickSlider.value = thickness;
+                thickInput.value = thickness;
+            }
+
+            updateDrawContext();
+            updateCursorStyle();
+            renderTextElements(); 
+        }
+
+        function updateColor(val) {
+            color = val;
+            colorPicker.value = val;
+            colorHex.value = val.toUpperCase();
+
+            // If a text box is actively selected, update its color dynamically
+            if (tool === 'text' && activeTextId) {
+                const texts = pageTexts[pageNum] || [];
+                const t = texts.find(x => x.id === activeTextId);
+                if (t) {
+                    t.color = color;
+                    const el = document.getElementById(`text-${t.id}`);
+                    if (el) el.style.color = color;
+                }
+            }
+
+            if(tool === 'pen' || tool === 'laser' || tool === 'shape' || tool === 'text') { updateDrawContext(); updateCursorStyle(); }
+        }
+        
+        colorPicker.addEventListener('input', (e) => updateColor(e.target.value));
+        colorPicker.addEventListener('change', () => { if (tool === 'text' && activeTextId) saveState(); });
+        colorHex.addEventListener('change', (e) => {
+            let val = e.target.value.trim();
+            if(!val.startsWith('#')) val = '#' + val;
+            if(/^#[0-9A-F]{6}$/i.test(val)) {
+                updateColor(val);
+                if (tool === 'text' && activeTextId) saveState();
+            } else {
+                updateColor(color); 
+            }
+        });
+
+        function updateThickness(val) {
+            if (tool === 'pan') return;
+            let v = parseInt(val);
+            if (v < 1) v = 1;
+            if (v > 100) v = 100;
+            thickness = v;
+            toolThickness[tool] = v; 
+            thickSlider.value = v;
+            thickInput.value = v;
+
+            // If a text box is actively selected, update its font size dynamically
+            if (tool === 'text' && activeTextId) {
+                const texts = pageTexts[pageNum] || [];
+                const t = texts.find(x => x.id === activeTextId);
+                if (t) {
+                    t.fontSizePct = (v * 1.5) / laserCanvas.height;
+                    const el = document.getElementById(`text-${t.id}`);
+                    if (el) el.style.fontSize = `${t.fontSizePct * laserCanvas.height}px`;
+                }
+            }
+
+            updateDrawContext();
+            updateCursorStyle();
+        }
+
+        thickSlider.addEventListener('input', (e) => updateThickness(e.target.value));
+        thickInput.addEventListener('change', (e) => updateThickness(e.target.value));
+        
+        thickSlider.addEventListener('change', () => { if (tool === 'text' && activeTextId) saveState(); });
+
+        function updateDrawContext() {
+            drawCtx.lineWidth = thickness * currentScale; 
+            drawCtx.lineCap = 'round';
+            drawCtx.lineJoin = 'round';
+            
+            if (tool === 'pen' || tool === 'shape') {
+                drawCtx.globalCompositeOperation = 'source-over';
+                drawCtx.strokeStyle = color;
+                drawCtx.fillStyle = hexToRgba(color, shapeFillOpacity);
+            } else if (tool === 'eraser') {
+                drawCtx.globalCompositeOperation = 'destination-out';
+                drawCtx.strokeStyle = 'rgba(0,0,0,1)';
+            }
+        }
+
+        function updateCursorStyle() {
+            if (tool === 'pan') {
+                customCursor.style.display = 'none';
+                laserCanvas.style.cursor = isPanning ? 'grabbing' : 'grab';
+                return;
+            }
+            if (tool === 'text') {
+                customCursor.style.display = 'none';
+                laserCanvas.style.cursor = 'text';
+                return;
+            }
+
+            laserCanvas.style.cursor = 'none';
+            cursorCircle.style.display = 'block';
+
+            const scaledSize = thickness * currentScale;
+            cursorCircle.style.width = `${scaledSize}px`;
+            cursorCircle.style.height = `${scaledSize}px`;
+
+            if(tool === 'pen' || tool === 'shape') {
+                cursorCircle.style.borderColor = color;
+                cursorCircle.style.backgroundColor = color + '40'; 
+            } else if (tool === 'laser') {
+                cursorCircle.style.borderColor = '#ef4444';
+                cursorCircle.style.backgroundColor = 'rgba(239, 68, 68, 0.4)';
+            } else {
+                cursorCircle.style.borderColor = '#9ca3af';
+                cursorCircle.style.backgroundColor = 'rgba(255,255,255,0.8)';
+            }
+        }
+
+        canvasWrapper.addEventListener('mouseenter', () => {
+            if(window.matchMedia("(pointer: fine)").matches && tool !== 'pan' && tool !== 'text') {
+                customCursor.style.display = 'flex';
+            }
+        });
+        canvasWrapper.addEventListener('mouseleave', () => {
+            customCursor.style.display = 'none';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (customCursor.style.display === 'flex') {
+                customCursor.style.left = e.clientX + 'px';
+                customCursor.style.top = e.clientY + 'px';
+            }
+        });
+
+        function getPos(e) {
+            const rect = laserCanvas.getBoundingClientRect();
+            const scaleX = laserCanvas.width / rect.width;
+            const scaleY = laserCanvas.height / rect.height;
+            return {
+                x: (e.clientX - rect.left) * scaleX,
+                y: (e.clientY - rect.top) * scaleY
+            };
+        }
+
+        // TEXT TOOL LOGIC 
+        function renderTextElements() {
+            textLayer.innerHTML = '';
+            
+            const texts = pageTexts[pageNum] || [];
+            texts.forEach(t => {
+                const wrapper = document.createElement('div');
+                wrapper.id = `text-wrapper-${t.id}`;
+                wrapper.className = `absolute group ${tool === 'text' ? 'pointer-events-auto' : 'pointer-events-none'}`;
+                wrapper.style.left = `${t.xPct * laserCanvas.width}px`;
+                wrapper.style.top = `${t.yPct * laserCanvas.height}px`;
+                wrapper.style.transformOrigin = 'center center';
+                wrapper.style.transform = `rotate(${t.rotation || 0}deg)`;
+
+                // Drag Handle
+                const handle = document.createElement('div');
+                handle.className = `absolute -top-3 -left-3 w-6 h-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full shadow cursor-move flex items-center justify-center text-gray-500 hover:text-indigo-600 hover:border-indigo-500 transition-all z-10 ${tool === 'text' ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100' : 'hidden'}`;
+                handle.innerHTML = '<i class="ph ph-arrows-out-cardinal"></i>';
+
+                // Delete Handle
+                const deleteHandle = document.createElement('div');
+                deleteHandle.className = `absolute -top-3 -right-3 w-6 h-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full shadow cursor-pointer flex items-center justify-center text-gray-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 hover:border-red-400 transition-all z-10 ${tool === 'text' ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100' : 'hidden'}`;
+                deleteHandle.innerHTML = '<i class="ph ph-trash"></i>';
+
+                // Rotate Handle
+                const rotateHandle = document.createElement('div');
+                rotateHandle.className = `absolute -bottom-4 left-1/2 -translate-x-1/2 w-6 h-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full shadow cursor-grab flex items-center justify-center text-gray-500 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 hover:border-emerald-400 transition-all z-10 ${tool === 'text' ? 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100' : 'hidden'}`;
+                rotateHandle.innerHTML = '<i class="ph ph-arrow-clockwise"></i>';
+
+                deleteHandle.addEventListener('pointerdown', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    pageTexts[pageNum] = pageTexts[pageNum].filter(x => x.id !== t.id);
+                    if (activeTextId === t.id) {
+                        activeTextId = null;
+                    }
+                    saveState();
+                    renderTextElements();
+                });
+
+                rotateHandle.addEventListener('pointerdown', (e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    
+                    activeTextId = t.id;
+                    const wrapperRect = wrapper.getBoundingClientRect();
+                    const pivotX = wrapperRect.left + wrapperRect.width / 2;
+                    const pivotY = wrapperRect.top + wrapperRect.height / 2;
+
+                    const startAngle = Math.atan2(e.clientY - pivotY, e.clientX - pivotX) * (180 / Math.PI);
+                    const initialRotation = t.rotation || 0;
+                    let isRotating = false;
+
+                    const onMove = (me) => {
+                        isRotating = true;
+                        const currentAngle = Math.atan2(me.clientY - pivotY, me.clientX - pivotX) * (180 / Math.PI);
+                        let newRot = (initialRotation + (currentAngle - startAngle)) % 360;
+                        if (newRot < 0) newRot += 360;
+                        
+                        const snapIncrement = 45;
+                        const snapThreshold = 10;
+                        let nearestSnap = Math.round(newRot / snapIncrement) * snapIncrement;
+                        
+                        let dist = Math.abs(newRot - nearestSnap);
+                        if (dist > 180) dist = 360 - dist;
+                        
+                        if (dist <= snapThreshold || me.shiftKey) {
+                            newRot = nearestSnap % 360;
+                            if (newRot < 0) newRot += 360;
+                        }
+                        
+                        t.rotation = newRot;
+                        wrapper.style.transform = `rotate(${t.rotation}deg)`;
+                    };
+
+                    const onUp = () => {
+                        window.removeEventListener('pointermove', onMove);
+                        window.removeEventListener('pointerup', onUp);
+                        if (isRotating) saveState();
+                    };
+
+                    window.addEventListener('pointermove', onMove);
+                    window.addEventListener('pointerup', onUp);
+                });
+
+                const el = document.createElement('div');
+                el.id = `text-${t.id}`;
+                el.contentEditable = (tool === 'text') ? "true" : "false";
+                el.className = `outline-none bg-transparent whitespace-pre-wrap p-1 -m-1 rounded transition-all ` + 
+                               `${tool === 'text' ? 'cursor-text hover:ring-2 hover:ring-gray-400 focus:ring-2 focus:ring-indigo-500 focus:bg-white/80 dark:focus:bg-gray-800/80 min-w-[30px] min-h-[30px] shadow-sm' : ''}`;
+                
+                el.style.color = t.color;
+                el.style.fontSize = `${t.fontSizePct * laserCanvas.height}px`;
+                el.style.fontFamily = 'Helvetica, Arial, sans-serif';
+                el.style.lineHeight = '1.2';
+                el.innerText = t.text;
+                
+                if (tool === 'text') {
+                    el.addEventListener('focus', () => {
+                        activeTextId = t.id;
+                        const boxThickness = Math.round((t.fontSizePct * laserCanvas.height) / 1.5);
+                        thickness = boxThickness;
+                        toolThickness['text'] = boxThickness;
+                        thickSlider.value = boxThickness;
+                        thickInput.value = boxThickness;
+                        
+                        color = t.color;
+                        colorPicker.value = color;
+                        colorHex.value = color.toUpperCase();
+                    });
+
+                    el.addEventListener('input', (e) => {
+                        t.text = e.target.innerText;
+                    });
+                    
+                    el.addEventListener('blur', () => {
+                        if (t.text.trim() === '') {
+                            pageTexts[pageNum] = pageTexts[pageNum].filter(x => x.id !== t.id);
+                            renderTextElements();
+                        } else {
+                            saveState();
+                        }
+                    });
+
+                    handle.addEventListener('pointerdown', (e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        
+                        activeTextId = t.id;
+                        const startPos = getPos(e);
+                        const offsetX = startPos.x - (t.xPct * laserCanvas.width);
+                        const offsetY = startPos.y - (t.yPct * laserCanvas.height);
+                        let isDragging = false;
+
+                        const onMove = (me) => {
+                            isDragging = true;
+                            const curPos = getPos(me);
+                            t.xPct = Math.max(0, (curPos.x - offsetX) / laserCanvas.width);
+                            t.yPct = Math.max(0, (curPos.y - offsetY) / laserCanvas.height);
+                            wrapper.style.left = `${t.xPct * laserCanvas.width}px`;
+                            wrapper.style.top = `${t.yPct * laserCanvas.height}px`;
+                        };
+
+                        const onUp = () => {
+                            window.removeEventListener('pointermove', onMove);
+                            window.removeEventListener('pointerup', onUp);
+                            if (isDragging) saveState();
+                        };
+
+                        window.addEventListener('pointermove', onMove);
+                        window.addEventListener('pointerup', onUp);
+                    });
+                }
+                
+                wrapper.appendChild(handle);
+                wrapper.appendChild(deleteHandle);
+                wrapper.appendChild(rotateHandle);
+                wrapper.appendChild(el);
+                textLayer.appendChild(wrapper);
+            });
+        }
+
+        // CTRL + Scroll Wheel Zoom
+        mainScroll.addEventListener('wheel', (e) => {
+            if (e.ctrlKey) {
+                e.preventDefault();
+                if (!pdfDoc) return;
+                
+                const zoomFactor = e.deltaY < 0 ? 0.08 : -0.08;
+                let val = parseFloat(zoomSlider.value);
+                val = Math.max(0.5, Math.min(3, val + zoomFactor));
+                
+                zoomSlider.value = val;
+                zoomVal.textContent = Math.round(val * 100) + '%';
+                
+                const scaleRatio = val / currentScale;
+                canvasWrapper.style.transform = `scale(${scaleRatio})`;
+
+                clearTimeout(window.wheelZoomTimer);
+                window.wheelZoomTimer = setTimeout(() => {
+                    zoomSlider.dispatchEvent(new Event('change'));
+                }, 200);
+            }
+        }, { passive: false });
+
+        // Touch Gestures Setup
+        function getPinchDistance(p1, p2) {
+            const dx = p1.clientX - p2.clientX;
+            const dy = p1.clientY - p2.clientY;
+            return Math.hypot(dx, dy);
+        }
+
+        window.addEventListener('pointerdown', (e) => {
+            if (e.pointerType === 'touch') {
+                activePointers.set(e.pointerId, e);
+                if (activePointers.size === 2) {
+                    isDrawing = false;
+                    isPanning = false;
+                    laserCtx.clearRect(0, 0, laserCanvas.width, laserCanvas.height);
+
+                    const points = Array.from(activePointers.values());
+                    initialPinchDistance = getPinchDistance(points[0], points[1]);
+                    pinchStartScale = parseFloat(zoomSlider.value);
+                }
+            }
+        });
+
+        window.addEventListener('pointermove', (e) => {
+            if (e.pointerType === 'touch' && activePointers.has(e.pointerId)) {
+                activePointers.set(e.pointerId, e);
+
+                if (activePointers.size === 2 && initialPinchDistance) {
+                    e.preventDefault();
+                    const points = Array.from(activePointers.values());
+                    const currentDist = getPinchDistance(points[0], points[1]);
+                    
+                    const ratio = currentDist / initialPinchDistance;
+                    let targetScale = Math.max(0.5, Math.min(3, pinchStartScale * ratio));
+
+                    zoomSlider.value = targetScale;
+                    zoomVal.textContent = Math.round(targetScale * 100) + '%';
+                    
+                    const scaleRatio = targetScale / currentScale;
+                    canvasWrapper.style.transform = `scale(${scaleRatio})`;
+                }
+            }
+        });
+
+        const handlePointerEnd = (e) => {
+            if (e.pointerType === 'touch') {
+                activePointers.delete(e.pointerId);
+                if (activePointers.size < 2 && initialPinchDistance !== null) {
+                    initialPinchDistance = null;
+                    zoomSlider.dispatchEvent(new Event('change'));
+                }
+            }
+        };
+
+        window.addEventListener('pointerup', handlePointerEnd);
+        window.addEventListener('pointercancel', handlePointerEnd);
+
+        laserCanvas.addEventListener('pointerdown', (e) => {
+            if(!pdfDoc || activePointers.size > 1) return;
+            
+            if (tool === 'text') {
+                e.preventDefault(); 
+                activeTextId = null;
+                
+                const pos = getPos(e);
+                const newText = {
+                    id: Date.now().toString() + Math.random().toString(),
+                    xPct: Math.max(0, pos.x / laserCanvas.width),
+                    yPct: Math.max(0, pos.y / laserCanvas.height),
+                    text: '',
+                    color: color,
+                    fontSizePct: (thickness * 1.5) / laserCanvas.height,
+                    rotation: 0
+                };
+                
+                if(!pageTexts[pageNum]) pageTexts[pageNum] = [];
+                pageTexts[pageNum].push(newText);
+                
+                renderTextElements();
+                
+                setTimeout(() => {
+                    const el = document.getElementById(`text-${newText.id}`);
+                    if (el) el.focus();
+                }, 10);
+                return;
+            }
+
+            if (tool === 'pan') {
+                if (e.pointerType === 'mouse' || e.pointerType === 'pen' || (e.pointerType === 'touch' && activePointers.size === 1)) {
+                    isPanning = true;
+                    panStartX = e.clientX;
+                    panStartY = e.clientY;
+                    panScrollX = mainScroll.scrollLeft;
+                    panScrollY = mainScroll.scrollTop;
+                    laserCanvas.setPointerCapture(e.pointerId);
+                    laserCanvas.style.cursor = 'grabbing';
+                }
+                return;
+            }
+
+            const pos = getPos(e);
+            laserCanvas.setPointerCapture(e.pointerId);
+            isDrawing = true;
+            lastPos = pos;
+            activeStrokePoints = [pos];
+            isConstrainedDrawing = false;
+            constrainedTargetPos = null;
+
+            if (tool === 'laser') {
+                laserPoints = [{ x: pos.x, y: pos.y, time: Date.now() }];
+                if(!laserRafId) renderLaserPointer();
+            } else if (tool === 'pen' || tool === 'shape') {
+                laserCtx.lineWidth = thickness * currentScale;
+                laserCtx.lineCap = 'round';
+                laserCtx.lineJoin = 'round';
+                laserCtx.strokeStyle = color;
+                laserCtx.fillStyle = hexToRgba(color, shapeFillOpacity);
+                
+                if (tool === 'pen') {
+                    laserCtx.beginPath();
+                    laserCtx.moveTo(pos.x, pos.y);
+                    laserCtx.lineTo(pos.x, pos.y);
+                    laserCtx.stroke();
+                }
+            } else {
+                drawCtx.beginPath();
+                drawCtx.moveTo(pos.x, pos.y);
+                drawCtx.lineTo(pos.x, pos.y);
+                drawCtx.stroke();
+            }
+        });
+
+        laserCanvas.addEventListener('pointermove', (e) => {
+            if (activePointers.size > 1) return;
+
+            if (tool === 'pan') {
+                if (isPanning) {
+                    const dx = e.clientX - panStartX;
+                    const dy = e.clientY - panStartY;
+                    mainScroll.scrollLeft = panScrollX - dx;
+                    mainScroll.scrollTop = panScrollY - dy;
+                }
+                return;
+            }
+
+            if(!isDrawing) return;
+            const pos = getPos(e);
+            
+            if (tool === 'laser') {
+                laserPoints.push({ x: pos.x, y: pos.y, time: Date.now() });
+                if(!laserRafId) renderLaserPointer();
+                lastPos = pos;
+            } else if (tool === 'pen') {
+                activeStrokePoints.push(pos);
+                const startPos = activeStrokePoints[0];
+                
+                laserCtx.clearRect(0, 0, laserCanvas.width, laserCanvas.height);
+
+                if (e.shiftKey) {
+                    isConstrainedDrawing = true;
+                    const dx = pos.x - startPos.x;
+                    const dy = pos.y - startPos.y;
+                    let angle = Math.atan2(dy, dx);
+                    
+                    const snapAngle = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);
+                    if (Math.abs(angle - snapAngle) < (15 * Math.PI / 180)) {
+                        angle = snapAngle;
+                    }
+                    
+                    const dist = Math.hypot(dx, dy);
+                    constrainedTargetPos = {
+                        x: startPos.x + dist * Math.cos(angle),
+                        y: startPos.y + dist * Math.sin(angle)
+                    };
+                    
+                    laserCtx.beginPath();
+                    laserCtx.moveTo(startPos.x, startPos.y);
+                    laserCtx.lineTo(constrainedTargetPos.x, constrainedTargetPos.y);
+                    laserCtx.stroke();
+                } else {
+                    isConstrainedDrawing = false;
+                    laserCtx.beginPath();
+                    laserCtx.moveTo(activeStrokePoints[0].x, activeStrokePoints[0].y);
+                    for (let i = 1; i < activeStrokePoints.length; i++) {
+                        laserCtx.lineTo(activeStrokePoints[i].x, activeStrokePoints[i].y);
+                    }
+                    laserCtx.stroke();
+                }
+                lastPos = pos;
+            } else if (tool === 'shape') {
+                const startPos = activeStrokePoints[0];
+                let w = pos.x - startPos.x;
+                let h = pos.y - startPos.y;
+
+                laserCtx.clearRect(0, 0, laserCanvas.width, laserCanvas.height);
+                laserCtx.beginPath();
+                laserCtx.save();
+
+                if (shapeType === 'pixelate') {
+                    laserCtx.setLineDash([5, 5]);
+                    laserCtx.strokeStyle = '#6b7280';
+                    let startX = Math.min(startPos.x, pos.x);
+                    let startY = Math.min(startPos.y, pos.y);
+                    laserCtx.rect(startX, startY, Math.abs(w), Math.abs(h));
+                } else if (shapeType === 'square') {
+                    let side = Math.max(Math.abs(w), Math.abs(h));
+                    w = w < 0 ? -side : side;
+                    h = h < 0 ? -side : side;
+                    laserCtx.rect(startPos.x, startPos.y, w, h);
+                } else if (shapeType === 'rectangle') {
+                    laserCtx.rect(startPos.x, startPos.y, w, h);
+                } else if (shapeType === 'circle') {
+                    let r = Math.max(Math.abs(w), Math.abs(h)) / 2;
+                    let cx = startPos.x + (w < 0 ? -r : r);
+                    let cy = startPos.y + (h < 0 ? -r : r);
+                    laserCtx.arc(cx, cy, r, 0, 2 * Math.PI);
+                } else if (shapeType === 'ellipse') {
+                    let rx = Math.abs(w / 2);
+                    let ry = Math.abs(h / 2);
+                    let cx = startPos.x + w / 2;
+                    let cy = startPos.y + h / 2;
+                    laserCtx.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
+                }
+                
+                if (shapeType !== 'pixelate' && shapeFillOpacity > 0) {
+                    laserCtx.fill();
+                }
+                laserCtx.stroke();
+                laserCtx.restore();
+                lastPos = pos;
+            } else {
+                drawCtx.lineTo(pos.x, pos.y);
+                drawCtx.stroke();
+                lastPos = pos;
+            }
+        });
+
+        window.addEventListener('pointerup', (e) => {
+            if (tool === 'pan') {
+                if (isPanning) {
+                    isPanning = false;
+                    try { laserCanvas.releasePointerCapture(e.pointerId); } catch(err) {}
+                    laserCanvas.style.cursor = 'grab';
+                }
+                return;
+            }
+            if (tool === 'text') return; 
+
+            if(isDrawing) {
+                try { laserCanvas.releasePointerCapture(e.pointerId); } catch(err) {}
+                commitDrawingStroke();
+            }
+        });
+
+        function commitDrawingStroke() {
+            isDrawing = false;
+            
+            if (tool === 'pen' && activeStrokePoints.length > 0) {
+                drawCtx.beginPath();
+                drawCtx.moveTo(activeStrokePoints[0].x, activeStrokePoints[0].y);
+                
+                if (isConstrainedDrawing && constrainedTargetPos) {
+                    drawCtx.lineTo(constrainedTargetPos.x, constrainedTargetPos.y);
+                } else {
+                    for (let i = 1; i < activeStrokePoints.length; i++) {
+                        drawCtx.lineTo(activeStrokePoints[i].x, activeStrokePoints[i].y);
+                    }
+                }
+                drawCtx.stroke();
+                laserCtx.clearRect(0, 0, laserCanvas.width, laserCanvas.height);
+            } else if (tool === 'shape' && activeStrokePoints.length > 0 && lastPos) {
+                const startPos = activeStrokePoints[0];
+                let w = lastPos.x - startPos.x;
+                let h = lastPos.y - startPos.y;
+
+                if (shapeType === 'pixelate') {
+                    let startX = Math.min(startPos.x, lastPos.x);
+                    let startY = Math.min(startPos.y, lastPos.y);
+                    let rectW = Math.abs(w);
+                    let rectH = Math.abs(h);
+
+                    if (rectW > 0 && rectH > 0) {
+                        const tempCanvas = document.createElement('canvas');
+                        tempCanvas.width = rectW;
+                        tempCanvas.height = rectH;
+                        const tempCtx = tempCanvas.getContext('2d');
+
+                        tempCtx.drawImage(pdfCanvas, startX, startY, rectW, rectH, 0, 0, rectW, rectH);
+                        tempCtx.drawImage(drawCanvas, startX, startY, rectW, rectH, 0, 0, rectW, rectH);
+
+                        const texts = pageTexts[pageNum] || [];
+                        texts.forEach(t => {
+                            if (!t.text || t.text.trim() === '') return;
+                            tempCtx.save();
+                            const fontSize = t.fontSizePct * laserCanvas.height;
+                            const px = (t.xPct * laserCanvas.width) - startX;
+                            const py = (t.yPct * laserCanvas.height) - startY;
+
+                            tempCtx.font = `${fontSize}px Helvetica, Arial, sans-serif`;
+                            tempCtx.fillStyle = t.color;
+                            tempCtx.textBaseline = 'top';
+
+                            if (t.rotation) {
+                                tempCtx.translate(px, py);
+                                tempCtx.rotate((t.rotation * Math.PI) / 180);
+                                tempCtx.fillText(t.text, 0, 0);
+                            } else {
+                                tempCtx.fillText(t.text, px, py);
+                            }
+                            tempCtx.restore();
+                        });
+
+                        const pixelSize = pixelationIntensity;
+                        const tinyCanvas = document.createElement('canvas');
+                        tinyCanvas.width = Math.max(1, rectW / pixelSize);
+                        tinyCanvas.height = Math.max(1, rectH / pixelSize);
+                        const tinyCtx = tinyCanvas.getContext('2d');
+
+                        tinyCtx.drawImage(tempCanvas, 0, 0, tinyCanvas.width, tinyCanvas.height);
+
+                        drawCtx.save();
+                        drawCtx.imageSmoothingEnabled = false; 
+                        drawCtx.drawImage(tinyCanvas, 0, 0, tinyCanvas.width, tinyCanvas.height, startX, startY, rectW, rectH);
+                        drawCtx.restore();
+                    }
+                } else {
+                    drawCtx.beginPath();
+                    if (shapeType === 'square') {
+                        let side = Math.max(Math.abs(w), Math.abs(h));
+                        w = w < 0 ? -side : side;
+                        h = h < 0 ? -side : side;
+                        drawCtx.rect(startPos.x, startPos.y, w, h);
+                    } else if (shapeType === 'rectangle') {
+                        drawCtx.rect(startPos.x, startPos.y, w, h);
+                    } else if (shapeType === 'circle') {
+                        let r = Math.max(Math.abs(w), Math.abs(h)) / 2;
+                        let cx = startPos.x + (w < 0 ? -r : r);
+                        let cy = startPos.y + (h < 0 ? -r : r);
+                        drawCtx.arc(cx, cy, r, 0, 2 * Math.PI);
+                    } else if (shapeType === 'ellipse') {
+                        let rx = Math.abs(w / 2);
+                        let ry = Math.abs(h / 2);
+                        let cx = startPos.x + w / 2;
+                        let cy = startPos.y + h / 2;
+                        drawCtx.ellipse(cx, cy, rx, ry, 0, 0, 2 * Math.PI);
+                    }
+                    if (shapeFillOpacity > 0) {
+                        drawCtx.fillStyle = hexToRgba(color, shapeFillOpacity);
+                        drawCtx.fill();
+                    }
+                    drawCtx.stroke();
+                }
+
+                laserCtx.clearRect(0, 0, laserCanvas.width, laserCanvas.height);
+            }
+            
+            activeStrokePoints = [];
+            isConstrainedDrawing = false;
+            constrainedTargetPos = null;
+            
+            saveState(); 
+        }
+
+        function renderLaserPointer() {
+            laserCtx.clearRect(0, 0, laserCanvas.width, laserCanvas.height);
+            const now = Date.now();
+            laserPoints = laserPoints.filter(p => now - p.time < 800);
+            
+            if (laserPoints.length > 1) {
+                laserCtx.lineCap = 'round';
+                laserCtx.lineJoin = 'round';
+                laserCtx.lineWidth = thickness * currentScale;
+                
+                for (let i = 1; i < laserPoints.length; i++) {
+                    const p1 = laserPoints[i - 1];
+                    const p2 = laserPoints[i];
+                    const age = now - p2.time;
+                    const opacity = Math.max(0, 1 - (age / 800));
+                    
+                    laserCtx.strokeStyle = `rgba(239, 68, 68, ${opacity})`;
+                    laserCtx.beginPath();
+                    laserCtx.moveTo(p1.x, p1.y);
+                    laserCtx.lineTo(p2.x, p2.y);
+                    laserCtx.stroke();
+                }
+            }
+            
+            if (laserPoints.length > 0) {
+                laserRafId = requestAnimationFrame(renderLaserPointer);
+            } else {
+                laserRafId = null;
+            }
+        }
+
+        function saveState() {
+            if(!pdfDoc) return;
+            const stateUrl = drawCanvas.toDataURL('image/png');
+            pageAnnotations[pageNum] = stateUrl;
+            
+            const stateTexts = JSON.stringify(pageTexts[pageNum] || []);
+            
+            if(!undoStack[pageNum]) undoStack[pageNum] = [];
+            const currentStack = undoStack[pageNum];
+            
+            if(currentStack.length > 0) {
+                const last = currentStack[currentStack.length - 1];
+                if(last.image === stateUrl && last.texts === stateTexts) return; 
+            }
+            
+            currentStack.push({ image: stateUrl, texts: stateTexts });
+            if(currentStack.length > 6) currentStack.shift(); 
+        }
+
+        document.getElementById('btn-undo').addEventListener('click', () => {
+            if(!pdfDoc || !undoStack[pageNum] || undoStack[pageNum].length <= 1) return;
+            
+            undoStack[pageNum].pop(); 
+            const previousState = undoStack[pageNum][undoStack[pageNum].length - 1];
+            
+            drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+            const img = new Image();
+            img.onload = () => {
+                drawCtx.drawImage(img, 0, 0, drawCanvas.width, drawCanvas.height);
+                pageAnnotations[pageNum] = previousState.image;
+                pageTexts[pageNum] = JSON.parse(previousState.texts);
+                renderTextElements();
+            };
+            img.src = previousState.image;
+        });
+
+        document.getElementById('btn-clear').addEventListener('click', () => {
+            if(!pdfDoc) return;
+            drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+            pageTexts[pageNum] = [];
+            lastPos = null;
+            renderTextElements();
+            saveState(); 
+        });
+
+        function restoreAnnotationsFromMemory() {
+            drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
+            const savedData = pageAnnotations[pageNum];
+            
+            if(savedData) {
+                const img = new Image();
+                img.onload = () => {
+                    drawCtx.drawImage(img, 0, 0, drawCanvas.width, drawCanvas.height);
+                    if (!undoStack[pageNum]) {
+                        undoStack[pageNum] = [{ image: savedData, texts: JSON.stringify(pageTexts[pageNum] || []) }];
+                    }
+                };
+                img.src = savedData;
+            } else {
+                if (!undoStack[pageNum]) {
+                    undoStack[pageNum] = [{ image: drawCanvas.toDataURL('image/png'), texts: "[]" }];
+                }
+            }
+            renderTextElements();
+        }
+
+        async function generateThumbnails() {
+            if(!pdfDoc) return;
+            const container = document.getElementById('thumbnail-container');
+            container.innerHTML = '';
+            
+            const currentGenId = ++thumbnailGenId;
+
+            for(let i = 1; i <= pdfDoc.numPages; i++) {
+                if (currentGenId !== thumbnailGenId) break; 
+
+                const thumbWrapper = document.createElement('div');
+                thumbWrapper.className = 'cursor-pointer p-2 border-2 border-transparent hover:border-indigo-500 rounded-lg transition-colors flex flex-col items-center relative shrink-0';
+                thumbWrapper.id = `thumb-${i}`;
+                thumbWrapper.onclick = () => {
+                    changePage(i);
+                    if(window.innerWidth < 768) toggleRightSidebar(); 
+                };
+                
+                const canvas = document.createElement('canvas');
+                canvas.className = 'w-full h-auto shadow-md bg-white border border-gray-300 dark:border-gray-700 block';
+                
+                try {
+                    const page = await pdfDoc.getPage(i);
+                    const viewport = page.getViewport({ scale: 0.25 });
+                    
+                    canvas.width = viewport.width;
+                    canvas.height = viewport.height;
+                    
+                    await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewport }).promise;
+                    
+                    const savedData = pageAnnotations[i];
+                    if (savedData) {
+                        const img = new Image();
+                        img.onload = () => canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+                        img.src = savedData;
+                    }
+
+                    const label = document.createElement('div');
+                    label.className = 'text-center text-xs mt-2 text-gray-500 dark:text-gray-400 font-medium';
+                    label.textContent = i;
+
+                    thumbWrapper.appendChild(canvas);
+                    thumbWrapper.appendChild(label);
+                    container.appendChild(thumbWrapper);
+                } catch (e) {
+                    console.error(`Thumbnail ${i} failed`, e);
+                }
+
+                await new Promise(r => setTimeout(r, 10)); 
+            }
+            updateActiveThumbnail();
+        }
+
+        function updateActiveThumbnail() {
+            if(!pdfDoc) return;
+            for(let i=1; i<=pdfDoc.numPages; i++){
+                const thumb = document.getElementById(`thumb-${i}`);
+                if(thumb) {
+                    if(i === pageNum) {
+                        thumb.classList.remove('border-transparent');
+                        thumb.classList.add('border-indigo-500', 'bg-indigo-50', 'dark:bg-indigo-900/20');
+                    } else {
+                        thumb.classList.add('border-transparent');
+                        thumb.classList.remove('border-indigo-500', 'bg-indigo-50', 'dark:bg-indigo-900/20');
+                    }
+                }
+            }
+            const active = document.getElementById(`thumb-${pageNum}`);
+            const rSidebar = document.getElementById('right-sidebar');
+            if(active && !rSidebar.classList.contains('-mr-[16rem]')) {
+                active.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+        }
+
+        async function loadDocument(arrayBuffer, fileName) {
+            currentFileName = fileName;
+            document.getElementById('file-name').textContent = fileName;
+            rawPdfBytes = new Uint8Array(arrayBuffer); 
+            lastPos = null;
+            activeTextId = null;
+            
+            pageAnnotations = {}; 
+            pageTexts = {};
+            undoStack = {}; 
+            
+            try {
+                pdfDoc = await pdfjsLib.getDocument({ data: rawPdfBytes.slice() }).promise;
+                
+                document.getElementById('page-count').textContent = pdfDoc.numPages;
+                emptyState.style.display = 'none';
+                canvasWrapper.style.display = 'block';
+                
+                pageNum = 1;
+                baseScale = 1.5;
+                currentScale = 1.0;
+                document.getElementById('zoom-slider').value = 1;
+                document.getElementById('zoom-val').textContent = '100%';
+                canvasWrapper.style.transform = 'none';
+                
+                await renderPage(pageNum);
+                
+                generateThumbnails();
+                doFitToScreen(); 
+                
+            } catch(err) {
+                showMessage("Error", "Could not parse PDF file.", true);
+                console.error(err);
+            }
+        }
+
+        fileInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if(file && file.type === 'application/pdf') {
+                const arrayBuffer = await file.arrayBuffer();
+                loadDocument(arrayBuffer, file.name);
+                e.target.value = ''; 
+            }
+        });
+
+        async function renderPage(num) {
+            if(!pdfDoc) return;
+            const page = await pdfDoc.getPage(num);
+            const viewport = page.getViewport({ scale: baseScale * currentScale });
+
+            canvasWrapper.style.width = `${viewport.width}px`;
+            canvasWrapper.style.height = `${viewport.height}px`;
+
+            [pdfCanvas, drawCanvas, laserCanvas].forEach(c => {
+                c.width = viewport.width;
+                c.height = viewport.height;
+            });
+
+            const renderContext = { canvasContext: pdfCtx, viewport: viewport };
+            await page.render(renderContext).promise;
+            
+            document.getElementById('page-num').textContent = num;
+            updatePaginationButtons();
+            
+            updateDrawContext();
+            updateCursorStyle();
+            restoreAnnotationsFromMemory();
+            updateActiveThumbnail();
+        }
+
+        const zoomSlider = document.getElementById('zoom-slider');
+        const zoomVal = document.getElementById('zoom-val');
+        
+        zoomSlider.addEventListener('input', (e) => {
+            if(!pdfDoc) return;
+            let tempScale = parseFloat(e.target.value);
+            zoomVal.textContent = Math.round(tempScale * 100) + '%';
+            
+            const scaleRatio = tempScale / currentScale;
+            canvasWrapper.style.transform = `scale(${scaleRatio})`;
+        });
+
+        zoomSlider.addEventListener('change', async (e) => {
+            if(!pdfDoc) return;
+            currentScale = parseFloat(e.target.value);
+            canvasWrapper.style.transform = 'none';
+            saveState();
+            await renderPage(pageNum);
+        });
+
+        function stepZoom(delta) {
+            if(!pdfDoc) return;
+            let val = parseFloat(zoomSlider.value);
+            val = Math.max(0.5, Math.min(3, val + delta));
+            zoomSlider.value = val;
+            zoomSlider.dispatchEvent(new Event('change'));
+            zoomVal.textContent = Math.round(val * 100) + '%';
+        }
+
+        document.getElementById('zoom-in').addEventListener('click', () => stepZoom(0.1));
+        document.getElementById('zoom-out').addEventListener('click', () => stepZoom(-0.1));
+
+        async function doFitToScreen() {
+            if (!pdfDoc) return;
+            const page = await pdfDoc.getPage(pageNum);
+            const baseViewport = page.getViewport({ scale: baseScale }); 
+            
+            const paddingBuffer = window.innerWidth < 768 ? 40 : 80;
+            const availWidth = mainScroll.clientWidth - paddingBuffer; 
+            const availHeight = mainScroll.clientHeight - paddingBuffer;
+            
+            const scaleX = availWidth / baseViewport.width;
+            const scaleY = availHeight / baseViewport.height;
+            
+            let newScale = Math.min(scaleX, scaleY);
+            newScale = Math.max(0.2, Math.min(3, newScale));
+            
+            zoomSlider.value = newScale;
+            zoomSlider.dispatchEvent(new Event('change'));
+        }
+
+        const fitBtns = document.querySelectorAll('#btn-fit-screen');
+        fitBtns.forEach(btn => btn.addEventListener('click', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            doFitToScreen();
+        }));
+
+        let resizeTimer;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => { if (pdfDoc) doFitToScreen(); }, 300);
+        });
+
+        async function reloadPdfFromBytes(newBytes) {
+            rawPdfBytes = newBytes;
+            pdfDoc = await pdfjsLib.getDocument({ data: rawPdfBytes.slice() }).promise;
+            document.getElementById('page-count').textContent = pdfDoc.numPages;
+            if(pageNum > pdfDoc.numPages) pageNum = pdfDoc.numPages;
+            await renderPage(pageNum);
+            generateThumbnails();
+        }
+
+        document.getElementById('btn-add-page').addEventListener('click', async () => {
+            overlay.style.display = 'flex';
+            overlayText.textContent = "Adding page...";
+            try {
+                const pdfBgColor = hexToPdfRgb(document.getElementById('template-bg-color').value);
+                const pageWidth = 595.28;
+                const pageHeight = 841.89;
+
+                if (!pdfDoc || !rawPdfBytes) {
+                    const newDoc = await PDFLib.PDFDocument.create();
+                    const page = newDoc.addPage([pageWidth, pageHeight]); 
+                    page.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, color: pdfBgColor });
+                    
+                    const newBytes = await newDoc.save();
+                    await loadDocument(newBytes.buffer, 'New Document.pdf');
+                } else {
+                    saveState();
+                    const libDoc = await PDFLib.PDFDocument.load(rawPdfBytes);
+                    
+                    const newPage = libDoc.insertPage(pageNum, [pageWidth, pageHeight]); 
+                    newPage.drawRectangle({ x: 0, y: 0, width: pageWidth, height: pageHeight, color: pdfBgColor });
+                    
+                    for (let i = pdfDoc.numPages; i >= pageNum + 1; i--) {
+                        pageAnnotations[i + 1] = pageAnnotations[i];
+                        pageTexts[i + 1] = pageTexts[i] ? [...pageTexts[i]] : [];
+                        undoStack[i + 1] = undoStack[i] ? [...undoStack[i]] : null;
+                    }
+                    pageAnnotations[pageNum + 1] = null;
+                    pageTexts[pageNum + 1] = [];
+                    undoStack[pageNum + 1] = null;
+                    
+                    const newBytes = await libDoc.save();
+                    pageNum++; 
+                    await reloadPdfFromBytes(newBytes);
+                }
+            } catch(e) {
+                console.error(e);
+                showMessage("Error", "Failed to add page.", true);
+            } finally {
+                overlay.style.display = 'none';
+            }
+        });
+
+        document.getElementById('btn-remove-page').addEventListener('click', async () => {
+            if(!pdfDoc || !rawPdfBytes) return;
+            if(pdfDoc.numPages <= 1) return showMessage("Notice", "Cannot remove the last page.", false);
+            
+            overlay.style.display = 'flex';
+            overlayText.textContent = "Removing page...";
+            try {
+                const libDoc = await PDFLib.PDFDocument.load(rawPdfBytes);
+                libDoc.removePage(pageNum - 1);
+                
+                for (let i = pageNum; i < pdfDoc.numPages; i++) {
+                    pageAnnotations[i] = pageAnnotations[i + 1];
+                    pageTexts[i] = pageTexts[i + 1] ? [...pageTexts[i + 1]] : [];
+                    undoStack[i] = undoStack[i + 1] ? [...undoStack[i + 1]] : null;
+                }
+                delete pageAnnotations[pdfDoc.numPages];
+                delete pageTexts[pdfDoc.numPages];
+                delete undoStack[pdfDoc.numPages];
+                
+                const newBytes = await libDoc.save();
+                if(pageNum > libDoc.getPageCount()) pageNum = libDoc.getPageCount();
+                await reloadPdfFromBytes(newBytes);
+            } catch(e) {
+                showMessage("Error", "Failed to remove page.", true);
+            } finally {
+                overlay.style.display = 'none';
+            }
+        });
+
+        // ROTATION LOGIC
+        async function rotatePage(degrees) {
+            if (!pdfDoc || !rawPdfBytes) return;
+            overlay.style.display = 'flex';
+            overlayText.textContent = "Rotating page...";
+
+            try {
+                saveState();
+                const libDoc = await PDFLib.PDFDocument.load(rawPdfBytes);
+                const page = libDoc.getPage(pageNum - 1);
+                
+                const annData = pageAnnotations[pageNum];
+                if (annData) {
+                    const img = new Image();
+                    await new Promise(r => { img.onload = r; img.src = annData; });
+
+                    const tempCanvas = document.createElement('canvas');
+                    
+                    if (degrees === 90 || degrees === -90 || degrees === 270 || degrees === -270) {
+                        tempCanvas.width = img.height;
+                        tempCanvas.height = img.width;
+                    } else {
+                        tempCanvas.width = img.width;
+                        tempCanvas.height = img.height;
+                    }
+                    
+                    const tCtx = tempCanvas.getContext('2d');
+                    tCtx.translate(tempCanvas.width / 2, tempCanvas.height / 2);
+                    tCtx.rotate(degrees * Math.PI / 180);
+                    tCtx.drawImage(img, -img.width / 2, -img.height / 2);
+
+                    pageAnnotations[pageNum] = tempCanvas.toDataURL('image/png');
+                }
+
+                const texts = pageTexts[pageNum] || [];
+                const pageInfo = await pdfDoc.getPage(pageNum); 
+                const oldViewport = pageInfo.getViewport({ scale: 1 });
+                const oldWidth = oldViewport.width;
+                const oldHeight = oldViewport.height;
+
+                for(const t of texts) {
+                    const el = document.getElementById(`text-${t.id}`);
+                    let boxWidthPct = 0;
+                    let boxHeightPct = 0;
+                    if (el) {
+                        boxWidthPct = el.offsetWidth / laserCanvas.width;
+                        boxHeightPct = el.offsetHeight / laserCanvas.height;
+                    }
+
+                    let newXPct = t.xPct;
+                    let newYPct = t.yPct;
+
+                    if (degrees === 90 || degrees === -270) {
+                        newXPct = 1 - (t.yPct + boxHeightPct);
+                        newYPct = t.xPct;
+                    } else if (degrees === -90 || degrees === 270) {
+                        newXPct = t.yPct;
+                        newYPct = 1 - (t.xPct + boxWidthPct);
+                    } else if (degrees === 180 || degrees === -180) {
+                        newXPct = 1 - (t.xPct + boxWidthPct);
+                        newYPct = 1 - (t.yPct + boxHeightPct);
+                    }
+
+                    t.xPct = Math.max(0, Math.min(1, newXPct));
+                    t.yPct = Math.max(0, Math.min(1, newYPct));
+                    
+                    if (degrees === 90 || degrees === -90 || degrees === 270 || degrees === -270) {
+                        t.fontSizePct = t.fontSizePct * (oldHeight / oldWidth);
+                    }
+
+                    t.rotation = ((t.rotation || 0) + degrees + 360) % 360;
+                }
+
+                undoStack[pageNum] = null;
+
+                const currentRotation = page.getRotation().angle;
+                page.setRotation(PDFLib.degrees(currentRotation + degrees));
+
+                const newBytes = await libDoc.save();
+                await reloadPdfFromBytes(newBytes);
+                
+                saveState();
+
+            } catch (e) {
+                console.error(e);
+                showMessage("Error", "Failed to rotate page.", true);
+            } finally {
+                overlay.style.display = 'none';
+            }
+        }
+
+        document.getElementById('btn-rotate-ccw').addEventListener('click', () => rotatePage(-90));
+        document.getElementById('btn-rotate-cw').addEventListener('click', () => rotatePage(90));
+
+        function updatePaginationButtons() {
+            document.getElementById('page-prev').disabled = pageNum <= 1;
+            document.getElementById('page-next').disabled = pageNum >= pdfDoc.numPages;
+        }
+
+        async function changePage(newNum) {
+            if(newNum === pageNum || newNum < 1 || newNum > pdfDoc.numPages) return;
+            saveState(); 
+            lastPos = null;
+            pageNum = newNum;
+            await renderPage(pageNum);
+        }
+
+        document.getElementById('page-prev').addEventListener('click', () => changePage(pageNum - 1));
+        document.getElementById('page-next').addEventListener('click', () => changePage(pageNum + 1));
+
+        // Event Listeners for the Modals
+        const linedModal = document.getElementById('lined-modal');
+
+        document.querySelectorAll('.template-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const type = e.currentTarget.dataset.type;
+                if (type === 'lined') {
+                    linedModal.style.display = 'flex';
+                    setTimeout(() => linedModal.classList.remove('opacity-0'), 10);
+                } else {
+                    generateAndLoadTemplate(type);
+                    if(window.innerWidth < 768) toggleLeftSidebar(); 
+                }
+            });
+        });
+
+        document.getElementById('btn-standard-lined').addEventListener('click', () => {
+            closeLinedModal();
+            generateAndLoadTemplate('lined');
+            if(window.innerWidth < 768) toggleLeftSidebar();
+        });
+
+        document.getElementById('btn-handwriting-lined').addEventListener('click', () => {
+            closeLinedModal();
+            generateAndLoadTemplate('handwriting');
+            if(window.innerWidth < 768) toggleLeftSidebar();
+        });
+
+        document.getElementById('btn-cancel-lined').addEventListener('click', closeLinedModal);
+
+        function closeLinedModal() {
+            linedModal.classList.add('opacity-0');
+            setTimeout(() => { linedModal.style.display = 'none'; }, 200);
+        }
+
+        async function generateAndLoadTemplate(type) {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
+            
+            const templateBgColor = document.getElementById('template-bg-color').value;
+            doc.setFillColor(templateBgColor);
+
+            const w = 210;
+            const h = 297;
+
+            doc.rect(0, 0, w, h, 'F');
+
+            const isChalkboard = templateBgColor === '#2a3b2e';
+
+            if (type === 'graph') {
+                if (isChalkboard) doc.setDrawColor(255, 255, 255); else doc.setDrawColor(220, 220, 220);
+                doc.setLineWidth(0.2);
+                for(let i = 0; i <= w; i += 5) { doc.line(i, 0, i, h); }
+                for(let i = 0; i <= h; i += 5) { doc.line(0, i, w, i); }
+            } else if (type === 'lined') {
+                if (isChalkboard) doc.setDrawColor(255, 255, 255); else doc.setDrawColor(200, 200, 200);
+                doc.setLineWidth(0.2);
+                for(let i = 30; i < h - 10; i += 8) { doc.line(20, i, w - 20, i); }
+                
+                if (isChalkboard) doc.setDrawColor(255, 100, 100); else doc.setDrawColor(255, 150, 150);
+                doc.setLineWidth(0.4);
+                doc.line(30, 0, 30, h);
+            } else if (type === 'handwriting') {
+                if (isChalkboard) doc.setDrawColor(255, 255, 255); else doc.setDrawColor(180, 180, 180);
+                doc.setLineWidth(0.3);
+                for(let y = 30; y < h - 20; y += 18) {
+                    doc.setLineDash([]);
+                    doc.line(20, y, w - 20, y);
+                    
+                    doc.setLineDash([1.5, 1.5], 0);
+                    doc.line(20, y + 6, w - 20, y + 6);
+                    
+                    doc.setLineDash([]);
+                    doc.line(20, y + 12, w - 20, y + 12);
+                }
+                
+                doc.setLineDash([]);
+
+                if (isChalkboard) doc.setDrawColor(255, 100, 100); else doc.setDrawColor(255, 150, 150);
+                doc.setLineWidth(0.4);
+                doc.line(30, 0, 30, h);
+            } else if (type === 'music') {
+                if (isChalkboard) doc.setDrawColor(255, 255, 255); else doc.setDrawColor(100, 100, 100);
+                doc.setLineWidth(0.2);
+                let yStart = 30;
+                while (yStart < h - 20) {
+                    for(let i=0; i<5; i++) { doc.line(20, yStart + (i*2), w - 20, yStart + (i*2)); }
+                    yStart += 20;
+                }
+            }
+
+            const arrayBuffer = doc.output('arraybuffer');
+            
+            if (!pdfDoc || !rawPdfBytes) {
+                loadDocument(arrayBuffer, `${type.charAt(0).toUpperCase() + type.slice(1)} Template.pdf`);
+            } else {
+                overlay.style.display = 'flex';
+                overlayText.textContent = "Adding template page...";
+                try {
+                    saveState();
+                    const mainDoc = await PDFLib.PDFDocument.load(rawPdfBytes);
+                    const templateDoc = await PDFLib.PDFDocument.load(arrayBuffer);
+                    const [copiedPage] = await mainDoc.copyPages(templateDoc, [0]);
+                    
+                    mainDoc.insertPage(pageNum, copiedPage);
+                    
+                    for (let i = pdfDoc.numPages; i >= pageNum + 1; i--) {
+                        pageAnnotations[i + 1] = pageAnnotations[i];
+                        pageTexts[i + 1] = pageTexts[i] ? [...pageTexts[i]] : [];
+                        undoStack[i + 1] = undoStack[i] ? [...undoStack[i]] : null;
+                    }
+                    pageAnnotations[pageNum + 1] = null;
+                    pageTexts[pageNum + 1] = [];
+                    undoStack[pageNum + 1] = null;
+                    
+                    const newBytes = await mainDoc.save();
+                    pageNum++; 
+                    await reloadPdfFromBytes(newBytes);
+                } catch (e) {
+                    console.error(e);
+                    showMessage("Error", "Failed to insert template page.", true);
+                } finally {
+                    overlay.style.display = 'none';
+                }
+            }
+        }
+
+        document.getElementById('btn-save-current-pdf').addEventListener('click', async () => {
+            if(!pdfDoc || !rawPdfBytes) return showMessage("Notice", "No document open to save.", false);
+            
+            saveState();
+            overlay.style.display = 'flex';
+            overlayText.textContent = "Saving current page...";
+
+            try {
+                const srcDoc = await PDFLib.PDFDocument.load(rawPdfBytes);
+                const newDoc = await PDFLib.PDFDocument.create();
+                
+                const [copiedPage] = await newDoc.copyPages(srcDoc, [pageNum - 1]);
+                newDoc.addPage(copiedPage);
+                
+                const { width, height } = copiedPage.getSize();
+                const helvetica = await newDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+
+                const annData = pageAnnotations[pageNum];
+                if(annData) {
+                    const imgRes = await fetch(annData);
+                    const imgBytes = await imgRes.arrayBuffer();
+                    const pngImage = await newDoc.embedPng(imgBytes);
+                    copiedPage.drawImage(pngImage, { x: 0, y: 0, width: width, height: height });
+                }
+                
+                const texts = pageTexts[pageNum] || [];
+                for(const t of texts) {
+                    if(t.text.trim() === '') continue;
+                    const fontSize = t.fontSizePct * height;
+                    const px = t.xPct * width;
+                    const py = height - (t.yPct * height);
+                    
+                    const rot = t.rotation || 0;
+                    const rad = rot * Math.PI / 180;
+                    const A = -rad; 
+                    const dyOffset = -(fontSize * 0.9);
+                    
+                    const x = px - dyOffset * Math.sin(A);
+                    const y = py + dyOffset * Math.cos(A);
+                    
+                    copiedPage.drawText(t.text, {
+                        x, y,
+                        size: fontSize,
+                        font: helvetica,
+                        color: hexToPdfRgb(t.color),
+                        lineHeight: fontSize * 1.2,
+                        rotate: PDFLib.degrees(-rot)
+                    });
+                }
+                
+                const pdfBytes = await newDoc.save();
+                const blob = new Blob([pdfBytes], { type: "application/pdf" });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `Page_${pageNum}_${currentFileName || 'Document'}.pdf`;
+                link.click();
+            } catch(e) {
+                console.error(e);
+                showMessage('Error', 'An error occurred while exporting the page.', true);
+            } finally {
+                overlay.style.display = 'none';
+            }
+        });
+
+        document.getElementById('btn-save-pdf').addEventListener('click', async () => {
+            if(!pdfDoc || !rawPdfBytes) return showMessage("Notice", "No document open to save.", false);
+            
+            saveState();
+            overlay.style.display = 'flex';
+            overlayText.textContent = "Merging annotations...";
+
+            try {
+                const exportDoc = await PDFLib.PDFDocument.load(rawPdfBytes);
+                const helvetica = await exportDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+                
+                for(let i = 1; i <= pdfDoc.numPages; i++) {
+                    const page = exportDoc.getPage(i - 1);
+                    const { width, height } = page.getSize();
+
+                    const annData = pageAnnotations[i];
+                    if(annData) {
+                        const imgRes = await fetch(annData);
+                        const imgBytes = await imgRes.arrayBuffer();
+                        const pngImage = await exportDoc.embedPng(imgBytes);
+                        
+                        page.drawImage(pngImage, {
+                            x: 0, y: 0, width: width, height: height,
+                        });
+                    }
+
+                    const texts = pageTexts[i] || [];
+                    for(const t of texts) {
+                        if(t.text.trim() === '') continue;
+                        const fontSize = t.fontSizePct * height;
+                        const px = t.xPct * width;
+                        const py = height - (t.yPct * height);
+                        
+                        const rot = t.rotation || 0;
+                        const rad = rot * Math.PI / 180;
+                        const A = -rad; 
+                        const dyOffset = -(fontSize * 0.9);
+                        
+                        const x = px - dyOffset * Math.sin(A);
+                        const y = py + dyOffset * Math.cos(A);
+                        
+                        page.drawText(t.text, {
+                            x, y,
+                            size: fontSize,
+                            font: helvetica,
+                            color: hexToPdfRgb(t.color),
+                            lineHeight: fontSize * 1.2,
+                            rotate: PDFLib.degrees(-rot)
+                        });
+                    }
+                }
+                
+                const pdfBytes = await exportDoc.save();
+                const blob = new Blob([pdfBytes], { type: "application/pdf" });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `Annotated_${currentFileName || 'Document'}.pdf`;
+                link.click();
+            } catch(e) {
+                console.error('Error generating PDF:', e);
+                showMessage('Error', 'An error occurred while generating the PDF.', true);
+            } finally {
+                overlay.style.display = 'none';
+            }
+        });
+
+        // Initialize UI State
+        updateToolUI();
+
+    </script>
+
+    <!-- PWA Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then(reg => console.log('Marc-oP Service Worker Registered: ', reg.scope))
+                    .catch(err => console.error('Service Worker Registration Failed: ', err));
+            });
+        }
+    </script>
+</body>
+</html>
